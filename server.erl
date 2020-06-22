@@ -1,8 +1,9 @@
 -module(server).
 -include("header.hrl").
--import(lists, [nth/2, member/2, append/2, delete/2]).
+-import(lists, [nth/2, member/2, append/2, delete/2, map/2]).
 -import(tateti, [make_play/3]).
 -export([start/0, dispatcher/1, psocket/3, pcomando/4, pupdater/1, master/3]).
+-export([lsgRequest/2]).
 
 
 % Inicializamos el server.
@@ -15,6 +16,13 @@ start() ->
                                   {packet, 0},
                                   {active, false}]),
   dispatcher(LSocket).
+
+lsgRequest([], _)-> [];
+lsgRequest([Hd | Tl], CMDId)->
+  {master, Hd} ! {lsg, CMDId, self()},
+  receive
+    {ok, CMDId, Lsg} -> Lsg ++ lsgRequest(Tl, CMDId)
+  end.
 
 % Master loop que se encarga de mantener actualizada la info de las partidas
 % y los jugadores.
@@ -29,21 +37,26 @@ master(Players, Games, Count) ->
                  master(append([Name], Players), Games, Count)
       end;
 
+% GameIDs = keys(Games)
+% LSG = map(fun -> {key, key#game.p1,.....}, Games)
+
     % Se pide una lista de todos los juegos disponibles.
     {lsg, CMDId, PID} -> 
-      PID ! {ok, CMDId, Games},
+      IDs = maps:keys(Games),
+      LSG = map(fun(Game) -> {Game, Game#game.p1, Game#game.p2, Game#game.obs} end, IDs),
+      PID ! {ok, CMDId, LSG},
       master(Players, Games, Count);
 
     % Crea un nuevo juego.
-    {new, CMDId, Name, PID} -> 
+    {new, CMDId, Name, Updater, PID} -> 
       GameId = {Count, node()},
-      Game = #game{p1 = Name, obs = [], turn = Name, moves = 0, updaters = []},
+      Game = #game{p1 = Name, obs = [], moves = 0, updaters = [Updater]}, 
       NGames = maps:put(GameId, Game),
       PID ! {ok, CMDId, GameId},
       master(Players, NGames, Count + 1);
 
     % Acepta un juego.
-    {acc, CMDId, GameId, Name, PID} -> 
+    {acc, CMDId, GameId, Name, Updater, PID} -> 
       case maps:find(GameId, Games) of
         error -> PID ! {error, CMDId, "Game not found"},
                  master(Players, Games, Count);
@@ -53,7 +66,7 @@ master(Players, Games, Count) ->
               PID ! {error, CMDId, "Game already on course"},
               master(Players, Game, Count);
             true -> 
-              NGame = Game#game{p2 = Name, board = ?CLEANBOARD},
+              NGame = Game#game{p2 = Name, board = ?CLEANBOARD, updaters = append(Updater, Game#game.updaters)},
               NGames = maps:update(GameId, NGame, Games),
               PID ! {ok, CMDId},
               master(Players, NGames, Count)
@@ -119,8 +132,8 @@ master(Players, Games, Count) ->
               master(Players, NGames, Count)
           end
       end;
-
-    {bye, Name} -> ok;
+    % Abandona todos los juegos en los que participe.
+    {bye, Name, PID} -> ok;
 
     _ -> ok
   end.
@@ -165,7 +178,8 @@ psocket(Socket, Name, Updater) ->
 pupdater(Socket) ->
   receive 
     bye -> ok;
-    Update -> gen_tcp:send(Socket, Update)
+    Update -> gen_tcp:send(Socket, Update),
+              pupdater(Socket)
   end.
 
 % Agrega un nuevo usuario al servidor.
@@ -179,19 +193,18 @@ pcomando({con, NewName}, Name, _, Socket)->
       end;
 % Lista los juegos disponibles.
 pcomando({lsg, CMDId}, _, _, Socket) ->
-  master ! {lsg, CMDId, self()},
+  Response = {ok, CMDId, lsgRequest(append(node(),nodes()), CMDId)},
+  gen_tcp:send(Socket, Response);
+
+% Inicia nuevo juego.
+pcomando({new, CMDId}, Name, Updater, Socket) -> 
+  master ! {new, CMDId, Name, Updater, self()},
   receive
     Response -> gen_tcp:send(Socket, Response)
   end;
-% Inicia nuevo juego.
-pcomando({new, CMDId}, Name) -> 
-  master ! {new, CMDId, Name, self()},
-  receive
-    Response -> Response
-  end;
 % Acepta un juego.
-pcomando({acc, CMDId, GameId, Name}) -> 
-  master ! {acc, CMDId, GameId, Name, self()},
+pcomando({acc, CMDId, GameId}, Name, Updater, Socket) -> 
+  master ! {acc, CMDId, GameId, Name, Updater, self()},
   receive
     Response -> Response
   end;
