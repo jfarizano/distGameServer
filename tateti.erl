@@ -4,7 +4,7 @@
 
 make_play(Game, {I, J}, Name) -> 
   ValidMove = valid_move(Game, {I, J}),
-  Pos = I + ( (J - 1) * 3),
+  Pos = J + ( (I - 1) * 3),
   if 
     Game#game.turn == Name ->
       if ValidMove ->
@@ -26,7 +26,7 @@ valid_move(Game, {I, J}) ->
   % element devuelve un error.
   if
     (I > 0) and (I < 4) and (J > 0) and (J < 4) -> 
-      (element(I + ( (J - 1) * 3), Game#game.board) == empty);
+      (element(J + ( (I - 1) * 3), Game#game.board) == empty);
     true -> false
   end.
            
