@@ -2,16 +2,19 @@
 -include("header.hrl").
 -import(lists, [nth/2, member/2, append/2, delete/2]).
 -import(tateti, [make_play/3]).
--export([start/0, dispatcher/1, master/3]).
+-export([start/0, dispatcher/1, master/3, pstat_aux/1, pstat/0, pbalance/1, request_node/0]).
 -export([psocket/3, pcomando/4, pupdater/1]).
--export([lsgRequest/2, broadcast/2, delete_player/2]).
+-export([lsgRequest/2, broadcast/2, delete_player/3]).
 
 
 % Inicializamos el server.
 start() ->
-  GamesMap = maps:new(),
-  MasterPid = spawn(?MODULE, master, [[], GamesMap, 0]),
+  MasterPid = spawn(?MODULE, master, [[], maps:new(), 0]),
   register(master, MasterPid),
+  PBPid = spawn(?MODULE, pbalance, [maps:new()]),
+  register(pbalance, PBPid),
+  PSPid = spawn(?MODULE, pstat, []),
+  register(pstat, PSPid),
   {ok, LSocket} = gen_tcp:listen(?PORT,
                                  [binary,
                                   {packet, 0},
@@ -30,8 +33,16 @@ broadcast([HdUpdater | Tl], Update) ->
   gen_tcp:send(HdUpdater, Update),
   broadcast(Tl, Update).
 
-delete_player(Name, Games) ->
-  ok.
+% hay que borrarlo de la lista de updaters si no es jugador??
+delete_player(_, [], Games) -> Games;
+delete_player(Name, [Hd | Tl], Games) ->
+  Game = maps:get(Hd, Games),
+  if 
+  (Game#game.p1 == Name) or (Game#game.p2 == Name) ->
+    NGames = maps:delete(Hd, Games),
+    delete_player(Name, Tl, NGames);
+  true -> delete_player(Name, Tl, Games)
+  end. 
 
 % Master loop que se encarga de mantener actualizada la info de las partidas
 % y los jugadores.
@@ -145,10 +156,41 @@ master(Players, Games, Count) ->
           end
       end;
     % Abandona todos los juegos en los que participe.
-    {bye, Name, Updater} ->
-      % NGames = delete_player(Name, Games), 
-      master(delete(Name, Players), Games, Count);
+    {bye, CMDId, Name, PID} ->
+      NGames = delete_player(Name, maps:keys(Games), Games),
+      PID ! {ok, CMDId},
+      % que le tengo que mandar a updater?? 
+      master(delete(Name, Players), NGames, Count);
     _ -> ok
+  end.
+
+% manda la información de carga del nodo en el que está al resto
+% de los nodos
+pstat_aux([]) -> ok;
+pstat_aux([Node | Nodes])-> 
+  {pbalance, Node} ! {status, node(), statistics(run_queue)}, % hay que registrar pbalance?
+  pstat_aux(Nodes).
+
+% tiene que ser un spawn creo xd
+pstat()->
+  pstat_aux(append([node()], nodes())),
+  timers:sleep(5000),  
+  pstat().
+
+request_node()->
+  pbalance ! {node, self()},
+  receive
+    Node -> Node
+  end.
+
+% recibe pedidos del socket para saber a que nodo mandar al cliente
+% junta la información que envia pstat
+% tiene q ser spawn??
+pbalance(StatusMap) ->
+  receive
+    {status, Node, Stat} ->
+        pbalance(maps:put(Node, Stat, StatusMap));
+    {node, PID} -> ok 
   end.
 
 % Acepta las conexiones entrantes y crea un hilo que se encargará 
@@ -178,7 +220,7 @@ psocket(Socket, Name, Updater) ->
   case gen_tcp:recv(Socket, 0) of
     {ok, Packet} ->
       Request = binary_to_term(Packet),
-      spawn(?MODULE, pcomando, [Request, Name, Updater, Socket]),
+      spawn(request_node(), ?MODULE, pcomando, [Request, Name, Updater, Socket]),
       psocket(Socket, Name, Updater);
     {error, close} ->
       spawn(?MODULE, pcomando, [disconnect, Name, Updater, Socket]),
@@ -242,8 +284,8 @@ pcomando({lea, CMDId, {Count, Node}}, Name, Updater, Socket) ->
   receive
     Response -> gen_tcp:send(Socket, Response)
   end;
-pcomando(bye, Name, _, Socket) ->
-  master ! {bye, Name, self()},
+pcomando(bye, CMDId, Name, Socket) ->
+  master ! {bye, CMDId, Name, self()},
   receive
     Response -> gen_tcp:send(Socket, Response)
   end;
