@@ -21,6 +21,7 @@ start() ->
                                   {active, false}]),
   dispatcher(LSocket).
 
+% Función auxiliar para listar los juegos disponibles.
 lsgRequest([], _) -> [];
 lsgRequest([Hd | Tl], CMDId) ->
   {master, Hd} ! {lsg, CMDId, self()},
@@ -33,7 +34,7 @@ broadcast([HdUpdater | Tl], Update) ->
   gen_tcp:send(HdUpdater, Update),
   broadcast(Tl, Update).
 
-% hay que borrarlo de la lista de updaters si no es jugador??
+% Elimina un jugador de todos los juegos que participe (como jugador).
 delete_player(_, [], Games) -> Games;
 delete_player(Name, [Hd | Tl], Games) ->
   Game = maps:get(Hd, Games),
@@ -44,8 +45,8 @@ delete_player(Name, [Hd | Tl], Games) ->
   true -> delete_player(Name, Tl, Games)
   end. 
 
-% Master loop que se encarga de mantener actualizada la info de las partidas
-% y los jugadores.
+% Master loop que se encarga de mantener actualizada la info 
+% de las partidas y los jugadores.
 master(Players, Games, Count) -> 
   receive
     % Ingresa nuevo usuario.
@@ -164,44 +165,47 @@ master(Players, Games, Count) ->
     _ -> ok
   end.
 
-% manda la información de carga del nodo en el que está al resto
-% de los nodos
+% Manda la información de carga del nodo actual al resto de los nodos.
 pstat_aux([]) -> ok;
 pstat_aux([Node | Nodes])-> 
   {pbalance, Node} ! {status, node(), statistics(run_queue)}, % hay que registrar pbalance?
   pstat_aux(Nodes).
 
-% tiene que ser un spawn creo xd
+% Envía a intervalos regulares la información de carga del nodo actual 
+% al resto de los nodos.
 pstat()->
   pstat_aux(append([node()], nodes())),
   timers:sleep(5000),  
   pstat().
 
+% Función auxiliar, se encarga de pedirle al proceso pbalance
+% el nodo con menor carga.
 request_node()->
   pbalance ! {node, self()},
   receive
     Node -> Node
   end.
 
-% Halla el nodo de menor carga (no probe si funciona xd)
+% Toma un mapa donde se guarda la información de carga de cada nodo
+% y devuelve el que tiene carga mínima.
 find_min([Key], Map) -> maps:get(Key, Map);
 find_min([Hd | Tl], Map)->
   min(maps:get(Hd, Map), find_min(Tl, Map)).
 
-% recibe pedidos del socket para saber a que nodo mandar al cliente
-% junta la información que envia pstat
-% tiene q ser spawn??
+% Proceso que se encarga de recibir la información de carga de los nodos
+% y almacena dicha info en un mapa. Además, atiende los pedidos de psocket
+% cuando se requiere el nodo que tenga menos carga.
 pbalance(StatusMap) ->
   receive
     {status, Node, Stat} ->
         pbalance(maps:put(Node, Stat, StatusMap));
     {node, PID} -> 
       PID ! find_min(maps:keys(StatusMap), StatusMap),
-        pbalance(StatusMap) 
+      pbalance(StatusMap) 
   end.
 
 % Acepta las conexiones entrantes y crea un hilo que se encargará 
-% de los pedidios de ese cliente. --> (hacer que mande al cliente al nodo con menos carga)
+% de los pedidios de ese cliente.
 dispatcher(LSocket) -> 
   {ok, Socket} = gen_tcp:accept(LSocket),
   Updater = spawn(?MODULE, pupdater, [Socket]),
@@ -236,7 +240,8 @@ psocket(Socket, Name, Updater) ->
   end.
 
 % Hilo de comunicación del servidor al cliente para actualizar estados
-% no para respuestas a pedidos del cliente.
+% (tales commo jugadas en una partida, etc... no para respuestas a 
+% pedidos del cliente).
 pupdater(Socket) ->
   receive 
     bye -> ok;
@@ -286,16 +291,19 @@ pcomando({obs, CMDId, {Count, Node}}, Name, Updater, Socket) ->
   receive
     Response -> gen_tcp:send(Socket, Response)
   end;
+% Dejar de observar un juego.
 pcomando({lea, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
   {master, Node} ! {lea, CMDId, {Count, Node}, Name, Updater, self()},
   receive
     Response -> gen_tcp:send(Socket, Response)
   end;
+% Abandonar todos los juegos en los que el usuario participe.
 pcomando(bye, CMDId, Name, Socket) ->
   master ! {bye, CMDId, Name, self()},
   receive
     Response -> gen_tcp:send(Socket, Response)
   end;
+% Termina la conexión.
 pcomando(disconnect, Name, _, _) ->
   master ! {bye, Name, self()},
   receive
