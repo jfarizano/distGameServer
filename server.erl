@@ -4,7 +4,7 @@
 -import(tateti, [make_play/3]).
 -export([start/0, dispatcher/1, master/3, pstat_aux/1, pstat/0, pbalance/1, request_node/0]).
 -export([psocket/3, pcomando/4, pupdater/1]).
--export([lsgRequest/2, broadcast/2, delete_player/3]).
+-export([lsgRequest/2, broadcast/2, delete_player/3, find_min/2]).
 
 
 % Inicializamos el server.
@@ -183,6 +183,11 @@ request_node()->
     Node -> Node
   end.
 
+% Halla el nodo de menor carga (no probe si funciona xd)
+find_min([Key], Map) -> maps:get(Key, Map);
+find_min([Hd | Tl], Map)->
+  min(maps:get(Hd, Map), find_min(Tl, Map)).
+
 % recibe pedidos del socket para saber a que nodo mandar al cliente
 % junta la información que envia pstat
 % tiene q ser spawn??
@@ -190,7 +195,9 @@ pbalance(StatusMap) ->
   receive
     {status, Node, Stat} ->
         pbalance(maps:put(Node, Stat, StatusMap));
-    {node, PID} -> ok 
+    {node, PID} -> 
+      PID ! find_min(maps:keys(StatusMap), StatusMap),
+        pbalance(StatusMap) 
   end.
 
 % Acepta las conexiones entrantes y crea un hilo que se encargará 
