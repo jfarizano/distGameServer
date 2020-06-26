@@ -1,6 +1,6 @@
 -module(client).
 -include("header.hrl").
--export([start/2, prompt/0, input/1, sender/3, receiver/1]).
+-export([start/2, prompt/0, input/1, sender/3, receiver/1, list_games/1, show_game/1, print_board/1]).
 
 start(IP, Port)->
     case gen_tcp:connect(IP, Port, [binary, {packet, 0}, {active,false}]) of
@@ -10,13 +10,6 @@ start(IP, Port)->
         io:format("Conexión exitosa ~n"),
         sender(Socket, undefined, init)
     end.
-
-receiver(Socket) ->
-  case gen_tcp:recv(Socket, 0) of
-    {ok, A} -> io:format("~p ~n", [binary_to_term(A)]),
-               receiver(Socket);
-    {error, closed} -> io:format("Servidor cerrado ~n")
-  end.
 
 sender(Socket, undefined, init) ->
   io:format("Antes de jugar debes definir tu nombre ~n"),
@@ -44,13 +37,21 @@ sender(Socket, undefined, init) ->
       end
   end;
 sender(Socket, Name, Count) ->
+  io:format("----------------------------- ~n"),
+  io:format("----------------------------- ~n"),
   prompt(),
   case input(Count) of
-    bye -> gen_tcp:send(Socket, term_to_binary(bye)),
-           gen_tcp:close(Socket);
-    Request -> gen_tcp:send(Socket, term_to_binary(Request)),
-               timer:sleep(1000),
-               sender(Socket, Name, Count + 1)
+    bye -> 
+      io:format("----------------------------- ~n"),
+      io:format("----------------------------- ~n"),
+      gen_tcp:send(Socket, term_to_binary(bye)),
+      gen_tcp:close(Socket);
+    Request -> 
+      io:format("----------------------------- ~n"),
+      io:format("----------------------------- ~n"),
+      gen_tcp:send(Socket, term_to_binary(Request)),
+      timer:sleep(1000),
+      sender(Socket, Name, Count + 1)
   end.
 
 prompt() -> 
@@ -108,4 +109,86 @@ input(CMDId) ->
              input(CMDId)
       end;
     {error, _} -> io:format("Entrada inválida ~n")
+  end.
+
+list_games([]) -> ok;
+list_games([{{N, Node}, P1, P2, Obs} | Tl]) ->
+  io:format("Juego n° ~p en el nodo ~p: ", [N, Node]),
+  case P2 of 
+    undefined -> io:format("~p está buscando rival, observan: ~p ~n", [P1, Obs]),
+                 list_games(Tl);
+    _ -> io:format("~p contra ~p, observan ~p ~n", [P1, P2, Obs]),
+         list_games(Tl)
+  end.
+
+print_cell(Cell) ->
+  case Cell of
+    o -> 'O';
+    x -> 'X';
+    empty -> '-'
+  end.
+
+print_board({A11, A12, A13, A21, A22, A23, A31, A32, A33}) ->
+  io:format("~p|~p|~p ~n", [print_cell(A11), print_cell(A12), print_cell(A13)]),
+  io:format("------------ ~n"),
+  io:format("~p|~p|~p ~n", [print_cell(A21), print_cell(A22), print_cell(A23)]),
+  io:format("------------ ~n"),
+  io:format("~p|~p|~p ~n", [print_cell(A31), print_cell(A32), print_cell(A33)]).
+
+show_game(Game)->
+  io:format("Juegan ~p contra ~p, es el turno de ~p y se realizaron ~p movimientos ~n", [Game#game.p1, Game#game.p2, Game#game.turn, Game#game.moves]),
+  print_board(Game#game.board).
+  
+receiver(Socket) ->
+  case gen_tcp:recv(Socket, 0) of
+    {ok, Packet} -> 
+      case binary_to_term(Packet) of
+        {ok, CMDId} -> 
+           io:format("Comando ~p realizado exitosamente ~n", [CMDId]),
+           receiver(Socket);
+        {error, CMDId, Reason} -> 
+          io:format("Error al realizar el comando ~p, motivo: ~p ~n", [CMDId, Reason]),
+          receiver(Socket);
+        {ok, lsg, CMDId, Lsg} ->
+          io:format("Se realizó el comando ~p, mostrando lista de juegos ~n", [CMDId]),
+          if
+            Lsg == [] -> 
+              io:format("No hay juegos en curso ~n"),
+              receiver(Socket);
+            true ->
+              list_games(Lsg),
+              receiver(Socket)
+            end;
+        {ok, new, CMDId, {N, Node}} -> 
+          io:format("Se realizó el comando ~p, iniciaste una nueva partida con el id: ~p en el nodo ~p ~n", [CMDId, N, Node]),
+          receiver(Socket);
+        {ok, obs, CMDId, {N, Node}, Game} ->
+          io:format("Se realizó el comando ~p, estás observando la partida: ~p en el nodo ~p ~n", [CMDId, N, Node]),
+          show_game(Game), 
+          receiver(Socket);
+        {upd, start, {N, Node}, Game} -> 
+          io:format("Inicia la partida: ~p en el nodo ~p: ~n", [N, Node]),
+          show_game(Game),
+          receiver(Socket);
+        {upd, pla, Name, {N, Node}, Game} -> 
+          io:format("~p realizó un movimiento en la partida: ~p en el nodo ~p ~n", [Name, N, Node]),
+          show_game(Game),
+          receiver(Socket);
+        {upd, pla, Name, {N, Node}, Game, Result} ->
+          case Result of 
+            tie ->
+              io:format("La partida ~p en el nodo ~p terminó en empate ~n", [N, Node]),
+              io:format("Tablero final ~n"),
+              print_board(Game#game.board),
+              receiver(Socket);
+            win ->  
+              io:format("~p ganó la partida: ~p en el nodo ~p ~n", [Name, N, Node]),
+              io:format("Tablero final ~n"),
+              print_board(Game#game.board),
+              receiver(Socket)
+          end;
+        {upd, leave, Name, {N, Node}} ->
+          io:format("~p abandonó la partida ~p en el nodo ~p ~n", [Name, N, Node])
+      end;
+    {error, closed} -> io:format("Servidor cerrado ~n")
   end.

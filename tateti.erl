@@ -1,6 +1,6 @@
 -module(tateti).
 -include("header.hrl").
--export([make_play/3, valid_move/2, modify_board/3, check/4]).
+-export([make_play/3, valid_move/2, modify_board/3, check/3]).
 
 make_play(Game, {I, J}, Name) -> 
   ValidMove = valid_move(Game, {I, J}),
@@ -11,7 +11,7 @@ make_play(Game, {I, J}, Name) ->
           {NTurn, NBoard} = modify_board(Game, Pos, Name),
           NMoves = Game#game.moves + 1,
           NGame = Game#game{board = NBoard, moves = NMoves, turn = NTurn},
-          case check(NBoard, element(Pos, NBoard), NMoves, Name) of
+          case check(NBoard, element(Pos, NBoard), NMoves) of
             continue -> NGame;
             Result -> {Result, NGame}
           end;
@@ -33,42 +33,42 @@ valid_move(Game, {I, J}) ->
 modify_board(Game, Pos, Name) ->
   if
     Game#game.p1 == Name -> {Game#game.p2, setelement(Pos, Game#game.board, x)};
-    true -> {Game#game.p1, setelement(Pos, Game#game.board, y)}
+    true -> {Game#game.p1, setelement(Pos, Game#game.board, o)}
   end.
 
-check(Board, Token, Moves, Name) -> 
+check(Board, Token, Moves) -> 
   case Board of
     {Token, _, _,
      Token, _, _,
-     Token, _, _} -> Name;
+     Token, _, _} -> win;
 
     {_, Token, _,
      _, Token, _,
-     _, Token, _} -> Name;
+     _, Token, _} -> win;
 
     {_, _, Token,
      _, _, Token,
-     _, _, Token} -> Name;
+     _, _, Token} -> win;
 
     {Token, Token, Token,
      _, _, _,
-     _, _, _} -> Name;
+     _, _, _} -> win;
 
     {_, _, _,
      Token, Token, Token,
-     _, _, _} -> Name;
+     _, _, _} -> win;
 
     {_, _, _,
      _, _, _,  
-     Token, Token, Token} -> Name;
+     Token, Token, Token} -> win;
 
     {Token, _, _,
      _, Token, _,
-     _, _, Token} -> Name;
+     _, _, Token} -> win;
 
      {_, _, Token,
       _, Token, _,
-      Token, _, _} -> Name;     
+      Token, _, _} -> win;     
 
     _ -> 
       if Moves == 9 -> tie;
