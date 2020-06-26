@@ -2,9 +2,10 @@
 -include("header.hrl").
 -import(lists, [nth/2, member/2, append/2, delete/2]).
 -import(tateti, [make_play/3]).
--export([start/0, dispatcher/1, master/3, pstat_aux/1, pstat/0, pbalance/1, request_node/0]).
+-export([start/0, open_socket/1, dispatcher/1, master/3, send_term/2]).
+-export([pstat_aux/1, pstat/0, pbalance/1, request_node/0]).
 -export([psocket/3, pcomando/4, pupdater/1]).
--export([lsgRequest/2, broadcast/2, delete_player/3, find_min/2]).
+-export([lsgRequest/2, broadcast/2, send_to_masters/2, delete_player/3, find_min/1]).
 
 
 % Inicializamos el server.
@@ -15,24 +16,37 @@ start() ->
   register(pbalance, PBPid),
   PSPid = spawn(?MODULE, pstat, []),
   register(pstat, PSPid),
-  {ok, LSocket} = gen_tcp:listen(?PORT,
-                                 [binary,
-                                  {packet, 0},
-                                  {active, false}]),
+  LSocket = open_socket(?PORT),
   dispatcher(LSocket).
+
+open_socket(Port) ->
+  case gen_tcp:listen(Port, [binary, {packet, 0}, {active, false}]) of
+    {ok, LSocket} -> io:format("Abriendo socket y escuchando en puerto ~p ~n", [Port]), 
+                     LSocket;
+    {error, eaddrinuse} -> io:format("Puerto ~p en uso~n", [Port]),
+                           open_socket(Port + 1)
+  end.
+
+send_term(Socket, Term) -> gen_tcp:send(Socket, term_to_binary(Term)).
+
+% Envía una actualización a todos los clientes pertinentes
+broadcast([], _) -> ok;
+broadcast([HdUpdater | Tl], Update) ->
+  HdUpdater ! Update,
+  broadcast(Tl, Update).
 
 % Función auxiliar para listar los juegos disponibles.
 lsgRequest([], _) -> [];
 lsgRequest([Hd | Tl], CMDId) ->
   {master, Hd} ! {lsg, CMDId, self()},
   receive
-    {ok, CMDId, Lsg} -> Lsg ++ lsgRequest(Tl, CMDId)
+    {ok, CMDId, Lsg} -> append(Lsg, lsgRequest(Tl, CMDId))
   end.
 
-broadcast([], _) -> ok;
-broadcast([HdUpdater | Tl], Update) ->
-  gen_tcp:send(HdUpdater, Update),
-  broadcast(Tl, Update).
+send_to_masters([], _) -> ok;
+send_to_masters([Hd | Tl], Request) ->
+  {master, Hd} ! Request,
+  send_to_masters(Tl, Request).
 
 % Elimina un jugador de todos los juegos que participe (como jugador).
 delete_player(_, [], Games) -> Games;
@@ -40,7 +54,8 @@ delete_player(Name, [Hd | Tl], Games) ->
   Game = maps:get(Hd, Games),
   if 
   (Game#game.p1 == Name) or (Game#game.p2 == Name) ->
-    NGames = maps:delete(Hd, Games),
+    broadcast(Game#game.updaters, {upd, leave, Name, Hd}),
+    NGames = maps:remove(Hd, Games),
     delete_player(Name, Tl, NGames);
   true -> delete_player(Name, Tl, Games)
   end. 
@@ -52,7 +67,7 @@ master(Players, Games, Count) ->
     % Ingresa nuevo usuario.
     {con, Name, PID} -> 
       case member(Name, Players) of
-        true -> PID ! {error, "Name taken"},
+        true -> PID ! {error, "Este nombre ya está en uso"},
                 master(Players, Games, Count);
         false -> PID ! ok,
                  master(append([Name], Players), Games, Count)
@@ -61,12 +76,12 @@ master(Players, Games, Count) ->
     % Se pide una lista de todos los juegos disponibles.
     {lsg, CMDId, PID} -> 
       IDs = maps:keys(Games),
-      LSG = lists:foldl(fun(ID, List) ->
+      Lsg = lists:foldl(fun(ID, List) ->
                           Game = maps:get(ID, Games),
                           [{ID, Game#game.p1, Game#game.p2, Game#game.obs}] ++ List 
                           end, 
                         [], IDs),
-      PID ! {ok, CMDId, LSG},
+      PID ! {ok, CMDId, Lsg},
       master(Players, Games, Count);
 
     % Crea un nuevo juego.
@@ -80,19 +95,22 @@ master(Players, Games, Count) ->
     % Acepta un juego.
     {acc, CMDId, GameId, Name, Updater, PID} -> 
       case maps:find(GameId, Games) of
-        error -> PID ! {error, CMDId, "Game not found"},
+        error -> PID ! {error, CMDId, "Juego no encontrado"},
                  master(Players, Games, Count);
         {ok, Game} ->
           if 
+            Game#game.p1 == Name ->
+              PID ! {error, CMDId, "No podés jugar contra vos mismo"},
+              master(Players, Games, Count);
             Game#game.p2 /= undefined -> 
-              PID ! {error, CMDId, "Game already on course"},
-              master(Players, Game, Count);
+              PID ! {error, CMDId, "El juego ya está en curso"},
+              master(Players, Games, Count);
             true -> 
               PList = [Game#game.p1, Name], % Elegimos de quien es el primer turno aleatoriamente
               Index = rand:uniform(length(PList)),
               NGame = Game#game{p2 = Name, board = ?CLEANBOARD, turn = nth(Index, PList), updaters = append([Updater], Game#game.updaters)},
               NGames = maps:update(GameId, NGame, Games),
-              PID ! {ok, CMDId, NGame, NGame#game.updaters},
+              PID ! {ok, CMDId, NGame},
               master(Players, NGames, Count)
           end
       end;
@@ -101,21 +119,27 @@ master(Players, Games, Count) ->
     {pla, CMDId, GameId, Play, Name, PID} -> 
       case maps:find(GameId, Games) of
         error -> 
-          PID ! {error, CMDId, "Game not found"},                 
+          PID ! {error, CMDId, "Juego no encontrado"},                 
           master(Players, Games, Count);
         {ok, Game} ->
-          case tateti:make_play(Game, Play, Name) of
-            {error, Reason} ->
-              PID ! {error, CMDId, Reason},
-              master(Players, Games, Count);
-            {Result, NGame} -> 
-              NGames = maps:update(GameId, NGame, Games),
-              PID ! {ok, CMDId, NGame, Result, NGame#game.updaters},
-              master(Players, NGames, Count);
-            NGame ->
-              NGames = maps:update(GameId, NGame, Games),
-              PID ! {ok, CMDId, NGame, NGame#game.updaters},
-              master(Players, NGames, Count)
+          if 
+            Game#game.p2 /= undefined ->
+              case make_play(Game, Play, Name) of
+                {error, Reason} ->
+                  PID ! {error, CMDId, Reason},
+                  master(Players, Games, Count);
+                {Result, NGame} -> 
+                  NGames = maps:update(GameId, NGame, Games),
+                  PID ! {ok, CMDId, NGame, Result},
+                  master(Players, NGames, Count);
+                NGame ->
+                  NGames = maps:update(GameId, NGame, Games),
+                  PID ! {ok, CMDId, NGame},
+                  master(Players, NGames, Count)
+              end;
+            true ->
+              PID ! {error, CMDId, "El juego todavía no comenzó"},
+              master(Players, Games, Count)
           end
       end;
 
@@ -123,18 +147,24 @@ master(Players, Games, Count) ->
     {obs, CMDId, GameId, Name, Updater, PID} ->
       case maps:find(GameId, Games) of
         error -> 
-          PID ! {error, CMDId, "Game not found"},                 
+          PID ! {error, CMDId, "Juego no encontrado"},                 
           master(Players, Games, Count);
         {ok, Game} -> 
           case member(Name, Game#game.obs) of
             true -> 
-              PID ! {error, CMDId, "Already observing"},
+              PID ! {error, CMDId, "Ya estás observando este juego"},
               master(Players, Games, Count);
             false ->
-              NGame = Game#game{obs = append([Name], Game#game.obs), updaters = append([Updater], Game#game.updaters)},
-              NGames = maps:update(GameId, NGame, Games),
-              PID ! {ok, CMDId},          
-              master(Players, NGames, Count)
+              if 
+                (Game#game.p1 /= Name) and (Game#game.p2 /= Name) ->
+                  NGame = Game#game{obs = append([Name], Game#game.obs), updaters = append([Updater], Game#game.updaters)},
+                  NGames = maps:update(GameId, NGame, Games),
+                  PID ! {ok, CMDId, Game},          
+                  master(Players, NGames, Count);
+                true ->
+                  PID ! {error, CMDId, "Estás participando en este juego"},
+                  master(Players, Games, Count)
+                end
           end
       end;
 
@@ -142,7 +172,7 @@ master(Players, Games, Count) ->
     {lea, CMDId, GameId, Name, Updater, PID} -> 
       case maps:find(GameId, Games) of
         error ->
-          PID ! {error, CMDId, "Game not found"},
+          PID ! {error, CMDId, "Juego no encontrado"},
           master(Players, Games, Count);
         {ok, Game} -> 
           case member(Name, Game#game.obs) of
@@ -159,23 +189,22 @@ master(Players, Games, Count) ->
     % Abandona todos los juegos en los que participe.
     {bye, CMDId, Name, PID} ->
       NGames = delete_player(Name, maps:keys(Games), Games),
-      PID ! {ok, CMDId},
-      % que le tengo que mandar a updater?? 
-      master(delete(Name, Players), NGames, Count);
+      master(delete(Name, Players), NGames, Count),
+      PID ! {ok, CMDId};
     _ -> ok
   end.
 
 % Manda la información de carga del nodo actual al resto de los nodos.
 pstat_aux([]) -> ok;
 pstat_aux([Node | Nodes])-> 
-  {pbalance, Node} ! {status, node(), statistics(run_queue)}, % hay que registrar pbalance?
+  {pbalance, Node} ! {status, node(), statistics(run_queue)},
   pstat_aux(Nodes).
 
 % Envía a intervalos regulares la información de carga del nodo actual 
 % al resto de los nodos.
 pstat()->
   pstat_aux(append([node()], nodes())),
-  timers:sleep(5000),  
+  timer:sleep(5000),  
   pstat().
 
 % Función auxiliar, se encarga de pedirle al proceso pbalance
@@ -188,9 +217,10 @@ request_node()->
 
 % Toma un mapa donde se guarda la información de carga de cada nodo
 % y devuelve el que tiene carga mínima.
-find_min([Key], Map) -> maps:get(Key, Map);
-find_min([Hd | Tl], Map)->
-  min(maps:get(Hd, Map), find_min(Tl, Map)).
+find_min(Map)->
+  Stats = maps:to_list(Map),
+  Sorted = lists:sort(fun(NodeA, NodeB) -> (element(2, NodeA) =< element(2, NodeB)) end, Stats),
+  element(1, nth(1, Sorted)).
 
 % Proceso que se encarga de recibir la información de carga de los nodos
 % y almacena dicha info en un mapa. Además, atiende los pedidos de psocket
@@ -200,7 +230,7 @@ pbalance(StatusMap) ->
     {status, Node, Stat} ->
         pbalance(maps:put(Node, Stat, StatusMap));
     {node, PID} -> 
-      PID ! find_min(maps:keys(StatusMap), StatusMap),
+      PID ! find_min(StatusMap),
       pbalance(StatusMap) 
   end.
 
@@ -208,22 +238,26 @@ pbalance(StatusMap) ->
 % de los pedidios de ese cliente.
 dispatcher(LSocket) -> 
   {ok, Socket} = gen_tcp:accept(LSocket),
+  io:format("Cliente conectado en socket ~p ~n", [Socket]),
   Updater = spawn(?MODULE, pupdater, [Socket]),
   spawn(?MODULE, psocket, [Socket, undefined, Updater]),
   dispatcher(LSocket).
 
 % Hilo que atiende los pedidos de un cliente determinado.
 psocket(Socket, undefined, Updater) ->
-  case gen_tcp:recv(Socket,0 ) of
+  case gen_tcp:recv(Socket, 0) of
     {ok, Packet} ->
       Request = binary_to_term(Packet),
       case Request of
         {con, Name} -> 
-          spawn(?MODULE, pcomando, [{con, {Name, node()}}, undefined, Updater, Socket]),
-          psocket(Socket, {Name, node()}, Updater);
-        _ -> gen_tcp:send(Socket, {error, "Name undefined"})
+          case pcomando({con, {Name, node()}}, undefined, Updater, Socket) of
+            {error, _} -> psocket(Socket, undefined, Updater);
+            ok -> psocket(Socket, {Name, node()}, Updater)
+          end;
+        _ -> send_term(Socket, {error, "Definí tu nombre primero"})
       end;
-    {error, close} -> 
+    {error, closed} ->
+      io:format("Cliente en socket ~p desconectado ~n", [Socket]),
       Updater ! bye,
       ok
   end;
@@ -233,10 +267,10 @@ psocket(Socket, Name, Updater) ->
       Request = binary_to_term(Packet),
       spawn(request_node(), ?MODULE, pcomando, [Request, Name, Updater, Socket]),
       psocket(Socket, Name, Updater);
-    {error, close} ->
-      spawn(?MODULE, pcomando, [disconnect, Name, Updater, Socket]),
-      updater ! bye,
-      io:format("~p disconnected ~n", [Name])
+    {error, closed} ->
+      io:format("Cliente ~p en socket ~p desconectado ~n", [Name, Socket]),
+      Updater ! bye,
+      pcomando(disconnect, Name, Updater, Socket)
   end.
 
 % Hilo de comunicación del servidor al cliente para actualizar estados
@@ -245,67 +279,73 @@ psocket(Socket, Name, Updater) ->
 pupdater(Socket) ->
   receive 
     bye -> ok;
-    Update -> gen_tcp:send(Socket, Update),
+    Update -> send_term(Socket, Update),
               pupdater(Socket)
   end.
 
 % Agrega un nuevo usuario al servidor.
 pcomando({con, NewName}, Name, _, Socket) ->
   if 
-    Name /= undefined -> gen_tcp:send(Socket, {error, "Name already defined"});
+    Name /= undefined -> send_term(Socket, {error, "Ya tenés un nombre definido"});
     true -> 
       master ! {con, NewName, self()},
       receive
-        Response -> gen_tcp:send(Socket, Response)
+        Response -> send_term(Socket, Response),
+                    Response
       end
   end;
 % Lista los juegos disponibles.
 pcomando({lsg, CMDId}, _, _, Socket) ->
-  Response = {ok, CMDId, lsgRequest(append([node()], nodes()), CMDId)},
-  gen_tcp:send(Socket, Response);
+  Lsg = lsgRequest(append([node()], nodes()), CMDId),
+  send_term(Socket, Lsg);
 % Inicia nuevo juego.
 pcomando({new, CMDId}, Name, Updater, Socket) -> 
   master ! {new, CMDId, Name, Updater, self()},
   receive
-    Response -> gen_tcp:send(Socket, Response)
+    Response -> send_term(Socket, Response)
   end;
 % Acepta un juego.
 pcomando({acc, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
   {master, Node} ! {acc, CMDId, {Count, Node}, Name, Updater, self()},
   receive
-    {error, CMDId, Reason} -> gen_tcp:send(Socket, {error, CMDId, Reason});
-    {ok, CMDId, Game, Updaters} -> broadcast(Updaters, {start, {Count, Node}, Game}),
-                                   gen_tcp:send(Socket, {ok, CMDId})
+    {error, CMDId, Reason} -> send_term(Socket, {error, CMDId, Reason});
+    {ok, CMDId, Game} -> send_term(Socket, {ok, CMDId}),
+                         broadcast(Game#game.updaters, {upd, start, {Count, Node}, Game})
+                                   
   end;
 % Hacer una jugada.
 pcomando({pla, CMDId, {Count, Node}, Play}, Name, _, Socket) -> 
-  {master, Node} ! {pla, CMDId, {Count, Node}, Name, Play, self()},
+  {master, Node} ! {pla, CMDId, {Count, Node}, Play, Name, self()},
   receive
-    {error, CMDId, Reason} -> gen_tcp:send(Socket, {error, CMDId, Reason});
-    {ok, CMDId, Game, Result, Updaters} -> broadcast(Updaters, {pla, {Count, Node}, Game, Result});
-    {ok, CMDId, Game, Updaters} -> broadcast(Updaters, {pla, {Count, Node}, Game})
+    {error, CMDId, Reason} -> send_term(Socket, {error, CMDId, Reason});
+    {ok, CMDId, Game, Result} -> send_term(Socket, {ok, CMDId}),
+                                 broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game, Result});
+    {ok, CMDId, Game} -> send_term(Socket, {ok, CMDId}),
+                         broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game})
   end;
 % Observar un juego
 pcomando({obs, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
   {master, Node} ! {obs, CMDId, {Count, Node}, Name, Updater, self()},
   receive
-    Response -> gen_tcp:send(Socket, Response)
+    Response -> send_term(Socket, Response)
   end;
 % Dejar de observar un juego.
 pcomando({lea, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
   {master, Node} ! {lea, CMDId, {Count, Node}, Name, Updater, self()},
   receive
-    Response -> gen_tcp:send(Socket, Response)
+    Response -> send_term(Socket, Response)
   end;
 % Abandonar todos los juegos en los que el usuario participe.
 pcomando(bye, CMDId, Name, Socket) ->
   master ! {bye, CMDId, Name, self()},
+  send_to_masters(nodes(), {bye, 0, Name, self()}),
   receive
-    Response -> gen_tcp:send(Socket, Response)
+    Response -> send_term(Socket, Response)
   end;
 % Termina la conexión.
 pcomando(disconnect, Name, _, _) ->
-  master ! {bye, Name, self()},
+  master ! {bye, 0, Name, self()},
+  send_to_masters(nodes(), {bye, 0, Name, self()}),
   receive
     _ -> ok
   end.

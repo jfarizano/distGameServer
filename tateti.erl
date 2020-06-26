@@ -15,9 +15,9 @@ make_play(Game, {I, J}, Name) ->
             continue -> NGame;
             Result -> {Result, NGame}
           end;
-          true -> {error, "Invalid move"}
+          true -> {error, "Movimiento inválido"}
       end;
-    true -> {error, "Not your turn"}
+    true -> {error, "No es tu turno"}
   end.
 
 valid_move(Game, {I, J}) ->
