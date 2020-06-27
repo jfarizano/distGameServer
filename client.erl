@@ -60,8 +60,9 @@ prompt() ->
   io:format("2) Crear un nuevo juego. ~n"),
   io:format("3) Aceptar un juego disponible. ~n"),
   io:format("4) Realizar una jugada en un juego en el que participes. ~n"),
-  io:format("5) Observar un juego. ~n"),
-  io:format("6) Dejar de observar un juego. ~n"),
+  io:format("5) Abandonar un juego en el que participes. ~n"),
+  io:format("6) Observar un juego. ~n"),
+  io:format("7) Dejar de observar un juego. ~n"),
   io:format("99) Terminar la conexión, abandonando todos los juegos en los que participes. ~n").
 
 input(CMDId) -> 
@@ -85,9 +86,18 @@ input(CMDId) ->
           case io:fread("Ingrese el número del juego, el nombre del nodo donde se encuentra, una fila y una columna del tablero ", "~d ~s ~d ~d") of
             {ok, [N, Node, Row, Column]} ->
               {pla, CMDId, {N, list_to_atom(Node)}, {Row, Column}};
-            _ -> io:format("Entrada inválida ~n")
+            _ -> io:format("Entrada inválida ~n"),
+                 input(CMDId)
           end;
         5 ->
+          case io:fread("Ingrese el número del juego y el nombre del nodo donde se encuentra: ", "~d ~s") of 
+            {ok, [N, Node]} -> 
+              {pla, CMDId, {N, list_to_atom(Node)}, leave};
+            _ -> 
+              io:format("Entrada inválida ~n"),
+              input(CMDId)
+            end;
+        6 ->
           case io:fread("Ingrese el número del juego y el nombre del nodo donde se encuentra: ", "~d ~s") of 
             {ok, [N, Node]} -> 
               {obs, CMDId, {N, list_to_atom(Node)}};
@@ -95,7 +105,7 @@ input(CMDId) ->
               io:format("Entrada inválida ~n"),
               input(CMDId)
             end;
-        6 -> 
+        7 -> 
           case io:fread("Ingrese el número del juego y el nombre del nodo donde se encuentra: ", "~d ~s") of 
             {ok, [N, Node]} -> 
               {lea, CMDId, {N, list_to_atom(Node)}};
@@ -108,7 +118,8 @@ input(CMDId) ->
         _ -> io:format("Opción inválida ~n"),
              input(CMDId)
       end;
-    {error, _} -> io:format("Entrada inválida ~n")
+    {error, _} -> io:format("Entrada inválida ~n"),
+                  input(CMDId)
   end.
 
 list_games([]) -> ok;
@@ -188,7 +199,8 @@ receiver(Socket) ->
               receiver(Socket)
           end;
         {upd, leave, Name, {N, Node}} ->
-          io:format("~p abandonó la partida ~p en el nodo ~p ~n", [Name, N, Node])
+          io:format("~p abandonó la partida ~p en el nodo ~p ~n", [Name, N, Node]),
+          receiver(Socket)
       end;
     {error, closed} -> io:format("Servidor cerrado ~n")
   end.

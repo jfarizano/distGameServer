@@ -5,7 +5,7 @@
 -export([start/0, open_socket/1, dispatcher/1, master/3, send_term/2]).
 -export([pstat_aux/1, pstat/0, pbalance/1, request_node/0]).
 -export([psocket/3, pcomando/4, pupdater/1]).
--export([lsgRequest/2, broadcast/2, send_to_masters/2, delete_player/3, find_min/1]).
+-export([lsgRequest/2, broadcast/2, send_to_masters/2, delete_player/4, find_min/1]).
 
 
 % Inicializamos el server.
@@ -52,15 +52,18 @@ send_to_masters([Hd | Tl], Request) ->
   send_to_masters(Tl, Request).
 
 % Elimina un jugador de todos los juegos que participe (como jugador).
-delete_player(_, [], Games) -> Games;
-delete_player(Name, [Hd | Tl], Games) ->
+delete_player(_, _, [], Games) -> Games;
+delete_player(Name, Updater, [Hd | Tl], Games) ->
   Game = maps:get(Hd, Games),
   if 
   (Game#game.p1 == Name) or (Game#game.p2 == Name) ->
     broadcast(Game#game.updaters, {upd, leave, Name, Hd}),
     NGames = maps:remove(Hd, Games),
-    delete_player(Name, Tl, NGames);
-  true -> delete_player(Name, Tl, Games)
+    delete_player(Name, Updater, Tl, NGames);
+  true -> 
+    NGame = Game#game{obs = delete(Name, Game#game.obs), updaters = delete(Updater, Game#game.updaters)},
+    NGames = maps:put(Hd, NGame, Games),
+    delete_player(Name, Updater, Tl, NGames)
   end. 
 
 % Manda la información de carga del nodo actual al resto de los nodos.
@@ -191,6 +194,12 @@ pcomando({pla, CMDId, {Count, Node}, Play}, Name, _, Socket) ->
     {ok, CMDId, Game} -> send_term(Socket, {ok, CMDId}),
                          broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game})
   end;
+% Abandonar una partida en especifico.
+pcomando({pla, CMDId, {Count, Node}}, leave, Name, Socket)->
+  {master, Node} ! {pla, CMDId, {Count, Node}, leave, Name, self()},
+  receive
+    Response -> send_term(Socket, Response)
+  end;
 % Observar un juego
 pcomando({obs, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
   {master, Node} ! {obs, CMDId, {Count, Node}, Name, Updater, self()},
@@ -204,16 +213,16 @@ pcomando({lea, CMDId, {Count, Node}}, Name, Updater, Socket) ->
     Response -> send_term(Socket, Response)
   end;
 % Abandonar todos los juegos en los que el usuario participe.
-pcomando(bye, CMDId, Name, Socket) ->
-  master ! {bye, CMDId, Name, self()},
-  send_to_masters(nodes(), {bye, 0, Name, self()}),
+pcomando(bye, Name, Updater, Socket) ->
+  master ! {bye, Name, Updater, self()},
+  send_to_masters(nodes(), {bye, Name, Updater, self()}),
   receive
     Response -> send_term(Socket, Response)
   end;
 % Termina la conexión.
-pcomando(disconnect, Name, _, _) ->
-  master ! {bye, 0, Name, self()},
-  send_to_masters(nodes(), {bye, 0, Name, self()}),
+pcomando(disconnect, Name, Updater, _) ->
+  master ! {bye, Name, Updater, self()},
+  send_to_masters(nodes(), {bye, Name, Updater, self()}),
   receive
     _ -> ok
   end.
@@ -272,7 +281,26 @@ master(Players, Games, Count) ->
               master(Players, NGames, Count)
           end
       end;
-
+    
+    % Abandonar un juego
+    {pla, CMDId, GameId, leave, Name, PID} -> 
+      case maps:find(GameId, Games) of
+        error -> 
+          PID ! {error, CMDId, "Juego no encontrado"},                 
+          master(Players, Games, Count);
+        {ok, Game} ->
+          if 
+            (Game#game.p1 == Name) or (Game#game.p2 == Name) ->
+              broadcast(Game#game.updaters, {upd, leave, Name, GameId}),
+              NGames = maps:remove(GameId, Games),
+              PID ! {ok, CMDId},
+              master(Players, NGames, Count);
+            true ->
+              PID ! {error, CMDId, "No estás participando de este juego"},
+              master(Players, Games, Count)
+          end
+      end;
+    
     % Realizar una jugada.
     {pla, CMDId, GameId, Play, Name, PID} -> 
       case maps:find(GameId, Games) of
@@ -281,7 +309,7 @@ master(Players, Games, Count) ->
           master(Players, Games, Count);
         {ok, Game} ->
           if 
-            Game#game.p2 /= undefined ->
+            Game#game.p2 /= undefined ->            
               case make_play(Game, Play, Name) of
                 {error, Reason} ->
                   PID ! {error, CMDId, Reason},
@@ -345,10 +373,10 @@ master(Players, Games, Count) ->
           end
       end;
     % Abandona todos los juegos en los que participe.
-    {bye, CMDId, Name, PID} ->
-      NGames = delete_player(Name, maps:keys(Games), Games),
+    {bye, Name, Updater, PID} ->
+      NGames = delete_player(Name, Updater, maps:keys(Games), Games),
       master(delete(Name, Players), NGames, Count),
-      PID ! {ok, CMDId};
+      PID ! ok;
     Invalid ->  % En caso de que pcomando envíe algo inválido, no debería pasar
       io:format("Se recibió el comando inválido ~p, revisar entrada ~n", [Invalid]),
       master(Players, Games, Count)
