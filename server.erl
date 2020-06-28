@@ -2,10 +2,10 @@
 -include("header.hrl").
 -import(lists, [nth/2, member/2, append/2, delete/2]).
 -import(tateti, [make_play/3]).
--export([start/0, open_socket/1, dispatcher/1, master/3, send_term/2]).
--export([pstat_aux/1, pstat/0, pbalance/1, request_node/0]).
--export([psocket/3, pcomando/4, pupdater/1]).
--export([lsgRequest/2, broadcast/2, send_to_masters/2, delete_player/4, find_min/1]).
+-export([start/0, open_socket/1, dispatcher/1, master/3]).
+-export([pstat/0, pbalance/1, request_node/0]).
+-export([psocket/3, pcomando/3, pupdater/1]).
+-export([lsgRequest/2, broadcast/2, send_to_registered/3, delete_player/4, find_min/1]).
 
 
 % Inicializamos el server.
@@ -17,7 +17,7 @@ start() ->
   PSPid = spawn(?MODULE, pstat, []),
   register(pstat, PSPid),
   LSocket = open_socket(?PORT),
-  dispatcher(LSocket).
+  spawn(?MODULE, dispatcher, [LSocket]).
 
 % Abre el socket en el primer puerto disponible que se encuentre a partir
 % del default definido en el header.
@@ -28,9 +28,6 @@ open_socket(Port) ->
     {error, eaddrinuse} -> io:format("Puerto ~p en uso~n", [Port]),
                            open_socket(Port + 1)
   end.
-
-% Realiza el trabajo de convertir a binario antes de enviar por el socket
-send_term(Socket, Term) -> gen_tcp:send(Socket, term_to_binary(Term)).
 
 % Envía una actualización a todos los clientes pertinentes
 broadcast([], _) -> ok;
@@ -46,10 +43,11 @@ lsgRequest([Hd | Tl], CMDId) ->
     {ok, CMDId, Lsg} -> append(Lsg, lsgRequest(Tl, CMDId))
   end.
 
-send_to_masters([], _) -> ok;
-send_to_masters([Hd | Tl], Request) ->
-  {master, Hd} ! Request,
-  send_to_masters(Tl, Request).
+% Envía el mensaje dado al hilo registrado en el atomo dado a los nodos dados
+send_to_registered(_, [], _) -> ok;
+send_to_registered(Atom, [Hd | Tl], Request) ->
+  {Atom, Hd} ! Request,
+  send_to_registered(Atom, Tl, Request).
 
 % Elimina un jugador de todos los juegos que participe (como jugador).
 delete_player(_, _, [], Games) -> Games;
@@ -66,17 +64,11 @@ delete_player(Name, Updater, [Hd | Tl], Games) ->
     delete_player(Name, Updater, Tl, NGames)
   end. 
 
-% Manda la información de carga del nodo actual al resto de los nodos.
-pstat_aux([]) -> ok;
-pstat_aux([Node | Nodes])-> 
-  {pbalance, Node} ! {status, node(), statistics(run_queue)},
-  pstat_aux(Nodes).
-
 % Envía a intervalos regulares la información de carga del nodo actual 
 % al resto de los nodos.
 pstat()->
-  pstat_aux(append([node()], nodes())),
-  timer:sleep(5000),  
+  send_to_registered(pbalance, append([node()], nodes()), {status, node(), statistics(run_queue)}),
+  timer:sleep(5000),
   pstat().
 
 % Función auxiliar, se encarga de pedirle al proceso pbalance
@@ -122,11 +114,11 @@ psocket(Socket, undefined, Updater) ->
       Request = binary_to_term(Packet),
       case Request of
         {con, Name} -> 
-          case pcomando({con, {Name, node()}}, undefined, Updater, Socket) of
+          case pcomando({con, {Name, node()}}, undefined, Updater) of
             {error, _} -> psocket(Socket, undefined, Updater);
             ok -> psocket(Socket, {Name, node()}, Updater)
           end;
-        _ -> send_term(Socket, {error, "Definí tu nombre primero"})
+        _ -> gen_tcp:send(Socket, term_to_binary({error, "Definí tu nombre primero"}))
       end;
     {error, closed} ->
       io:format("Cliente en socket ~p desconectado ~n", [Socket]),
@@ -137,92 +129,91 @@ psocket(Socket, Name, Updater) ->
   case gen_tcp:recv(Socket, 0) of
     {ok, Packet} ->
       Request = binary_to_term(Packet),
-      spawn(request_node(), ?MODULE, pcomando, [Request, Name, Updater, Socket]),
+      spawn(request_node(), ?MODULE, pcomando, [Request, Name, Updater]),
       psocket(Socket, Name, Updater);
     {error, closed} ->
       io:format("Cliente ~p en socket ~p desconectado ~n", [Name, Socket]),
       Updater ! bye,
-      pcomando(disconnect, Name, Updater, Socket)
+      pcomando(disconnect, Name, Updater)
   end.
 
-% Hilo de comunicación del servidor al cliente para actualizar estados
-% (tales como jugadas en una partida, etc... no para respuestas a 
-% pedidos del cliente).
+% Hilo de comunicación del servidor al cliente para actualizar estados y
+% responder peticiones
 pupdater(Socket) ->
   receive 
     bye -> ok;
-    Update -> send_term(Socket, Update),
+    Update -> gen_tcp:send(Socket, term_to_binary(Update)),
               pupdater(Socket)
   end.
 
 % Agrega un nuevo usuario al servidor.
-pcomando({con, NewName}, Name, _, Socket) ->
+pcomando({con, NewName}, Name, Updater) ->
   if 
-    Name /= undefined -> send_term(Socket, {error, "Ya tenés un nombre definido"});
+    Name /= undefined -> Updater ! {error, "Ya tenés un nombre definido"};
     true -> 
       master ! {con, NewName, self()},
       receive
-        Response -> send_term(Socket, Response),
+        Response -> Updater ! Response,
                     Response
       end
   end;
 % Lista los juegos disponibles.
-pcomando({lsg, CMDId}, _, _, Socket) ->
+pcomando({lsg, CMDId}, _, Updater) ->
   Lsg = lsgRequest(append([node()], nodes()), CMDId),
-  send_term(Socket, {ok, lsg, CMDId, Lsg});
+  Updater ! {ok, lsg, CMDId, Lsg};
 % Inicia nuevo juego.
-pcomando({new, CMDId}, Name, Updater, Socket) -> 
+pcomando({new, CMDId}, Name, Updater) -> 
   master ! {new, CMDId, Name, Updater, self()},
   receive
-    Response -> send_term(Socket, Response)
+    Response -> Updater ! Response
   end;
 % Acepta un juego.
-pcomando({acc, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
+pcomando({acc, CMDId, {Count, Node}}, Name, Updater) -> 
   {master, Node} ! {acc, CMDId, {Count, Node}, Name, Updater, self()},
   receive
-    {error, CMDId, Reason} -> send_term(Socket, {error, CMDId, Reason});
-    {ok, CMDId, Game} -> send_term(Socket, {ok, CMDId}),
+    {error, CMDId, Reason} -> Updater ! {error, CMDId, Reason};
+    {ok, CMDId, Game} -> Updater ! {ok, CMDId},
                          broadcast(Game#game.updaters, {upd, start, {Count, Node}, Game})                                  
   end;
-% Hacer una jugada.
-pcomando({pla, CMDId, {Count, Node}, Play}, Name, _, Socket) -> 
-  {master, Node} ! {pla, CMDId, {Count, Node}, Play, Name, self()},
-  receive
-    {error, CMDId, Reason} -> send_term(Socket, {error, CMDId, Reason});
-    {ok, CMDId, Game, Result} -> send_term(Socket, {ok, CMDId}),
-                                 broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game, Result});
-    {ok, CMDId, Game} -> send_term(Socket, {ok, CMDId}),
-                         broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game})
-  end;
 % Abandonar una partida en especifico.
-pcomando({pla, CMDId, {Count, Node}}, leave, Name, Socket)->
+pcomando({pla, CMDId, {Count, Node}, leave}, Name, Updater)->
   {master, Node} ! {pla, CMDId, {Count, Node}, leave, Name, self()},
   receive
-    Response -> send_term(Socket, Response)
+    Response -> Updater ! Response
+  end;
+% Hacer una jugada.
+pcomando({pla, CMDId, {Count, Node}, Play}, Name, Updater) -> 
+  {master, Node} ! {pla, CMDId, {Count, Node}, Play, Name, self()},
+  receive
+    {error, CMDId, Reason} -> Updater ! {error, CMDId, Reason};
+    {ok, CMDId, Game, Result} -> Updater ! {ok, CMDId},
+                                 broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game, Result});
+    {ok, CMDId, Game} -> Updater ! {ok, CMDId},
+                         broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game})
   end;
 % Observar un juego
-pcomando({obs, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
+pcomando({obs, CMDId, {Count, Node}}, Name, Updater) -> 
   {master, Node} ! {obs, CMDId, {Count, Node}, Name, Updater, self()},
   receive
-    Response -> send_term(Socket, Response)
+    Response -> Updater ! Response
   end;
 % Dejar de observar un juego.
-pcomando({lea, CMDId, {Count, Node}}, Name, Updater, Socket) -> 
+pcomando({lea, CMDId, {Count, Node}}, Name, Updater) -> 
   {master, Node} ! {lea, CMDId, {Count, Node}, Name, Updater, self()},
   receive
-    Response -> send_term(Socket, Response)
+    Response -> Updater ! Response
   end;
 % Abandonar todos los juegos en los que el usuario participe.
-pcomando(bye, Name, Updater, Socket) ->
+pcomando(bye, Name, Updater) ->
   master ! {bye, Name, Updater, self()},
-  send_to_masters(nodes(), {bye, Name, Updater, self()}),
+  send_to_registered(master, nodes(), {bye, Name, Updater, self()}),
   receive
-    Response -> send_term(Socket, Response)
+    Response -> Updater ! Response
   end;
 % Termina la conexión.
-pcomando(disconnect, Name, Updater, _) ->
+pcomando(disconnect, Name, Updater) ->
   master ! {bye, Name, Updater, self()},
-  send_to_masters(nodes(), {bye, Name, Updater, self()}),
+  send_to_registered(master, nodes(), {bye, Name, Updater, self()}),
   receive
     _ -> ok
   end.
