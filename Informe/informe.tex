@@ -18,10 +18,98 @@
 
 \maketitle
 
-\section*{Motivación del problema}
-(perdi)
+\section*{Objetivo}
+El objetivo es hacer un servidor de partidas de ta-te-ti. Este le permite a los 
+usuarios conectarse, crear nuevas partidas y aceptarlas, así como unirse a una
+partida iniciada o por iniciar como observador. Las distintas opciones entre las que
+puede elegir el usuario, son las siguientes:
+
+\begin{enumerate}
+    \item Iniciar la comunicación con el servidor: para esto el usuario provee un
+          nombre y si este se encuentra en uso el servidor lo acepta.
+    \item Listar los juegos disponibles: se muestran tanto los juegos que están en
+          desarrollo como los que están esperando un contrincante.
+    \item Crear un nuevo juego: este será entre el jugador que lo cree y el primero
+          que lo acepte.
+    \item Realizar una jugada: el usuario puede realizar un movimiento en el 
+          tablero o abandonar la partida si lo desea. El servidor devolverá una
+          error si la jugada no es válida.
+    \item Observar un juego: el usuario que pida observar un juego, comenzará a 
+          recibir todos los cambios en el estado del juego.
+    \item Dejar de observar un juego.
+    \item Terminar la conexión: el usuario abandona todos los juegos en los que 
+          participe y luego la conexión se termina.
+\end{enumerate}
+
+Al ejecutar el programa del cliente, este tendrá un menú interactivo con instrucciones
+detalladas acerca de cómo realizar cada comando.
+
+\section*{Ejecución del Cliente y Servidor}
+
+Para ejecutar el Cliente, en la consola de Erlang debemos hacer primero \texttt{c(client).} y
+luego, \texttt{client:start(IP, Port).} donde IP y Port deben ser la direccion de IP y
+Puerto correspondiente. \\
+
+Para ejecutar el Server, debemos cargar dos módulos: \texttt{c(tateti).} y \texttt{c(server).}, una
+vez hecho esto, simplemente escribimos: \texttt{server:start().} y ya estará listo
+para aceptar conexiones e interactuar con los clientes. \\
+
+\subsection*{Observaciones:}
+
+\begin{itemize}
+    \item Para ejecutar el servidor se asume que los nodos en las PCs ya están
+          conectados entre sí.
+    \item Por la manera en que se intercambian los mensajes entre Cliente y Servidor 
+          en nuestra implementación, es importante aclarar que para el funcionamiento
+          correcto del Servidor, el Cliente debe estar programado en Erlang. 
+\end{itemize}
 
 \section*{Implementación}
-(perdi)
+
+\subsection*{Servidor}
+
+Cuando se incializa el servidor se abre el socket y comienzan cuatro procesos:
+
+\begin{itemize}
+    \item \texttt{dispatcher}: es el proceso encargado de aceptar las conexiones de los clientes
+          entrantes. Al aceptar la conexión de un cliente, se inicia un proceso llamado
+          \texttt{pupdater} que se encargará de mandarle al cliente las actualizaciones acerca del
+          estado de los juegos en los que participe. Luego, el \texttt{dispatcher} inicia
+          un hilo \texttt{psocket} que es el que se encargará únicamente de atender los pedidos de dicho
+          cliente. \\
+          El hilo \texttt{psocket}, primero se encarga de que el cliente proporcione un 
+          nombre de usuario. Una vez que este ya tiene un nombre, puede comenzar a realizar
+          pedidos. Cuando el cliente hace un pedido, se inicia el proceso \texttt{pcomando}
+          que recibe el pedido que mandó el cliente y si no se produce ningún error, lo cumple
+          y responde a la petición del cliente. 
+    \item \texttt{master}: este proceso es el que guarda la información de los jugadores y 
+          los juegos que están en curso. Cuando el proceso \texttt{pcomando} recibe la
+          petición del cliente, este se la manda a \texttt{master}, que se encarga de 
+          realizarla, actualizar su información (si es necesario) y luego responderle a \texttt{pcomando} con la información que éste
+          le debe enviar de vuelta al cliente.
+    \item \texttt{pbalance} y \texttt{pstat}: como podemos tener distintos servidores corriendo
+          en distintos nodos, aparentando ser un único servidor, es necesario tener funciones
+          que se encarguen de repartir el trabajo que debe realizar cada nodo, para asi evitar 
+          que en un solo nodo se realicen muchas peticiones mientras que los otros no están trabajando.
+          Para ello, el proceso \texttt{pstat} manda regularmente la información de carga del nodo en el que
+          se encuentra al resto de los nodos. Esta información la recibe \texttt{pbalance} y se encarga de
+          guardarla. Entonces, cuando un cliente hace una request, se le pide a \texttt{pbalance} que
+          nos devuelva el nodo que menos carga tiene en ese momento, para así realizar la petición del 
+          cliente en dicho nodo. 
+\end{itemize}
+
+En resumen, son estos procesos, junto con algunas funciones auxilares, las que conforman
+y hacen funcionar nuestro servidor, estas tratan de ser lo más exhaustivas posibles al
+momento de detectar si hubo algún error en la conexión o al procesar una petición para poder
+evitar que éste se caiga.
+
+\subsection*{Cliente}
+
+\subsection*{Tateti}
+
+El módulo tateti, es tan sólo una implementación simple y práctica del juego tateti, podemos ver
+que la función principal es \texttt{make\_play}, la cual se encarga de realizar la jugada
+pedida por el usuario y modificar el tablero, siempre controlando que los movimientos 
+que se realicen sean válidos.
 
 \end{document}
