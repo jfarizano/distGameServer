@@ -251,12 +251,16 @@ master(Players, Games, Count) ->
       master(Players, NGames, Count + 1);
 
     % Acepta un juego.
-    {acc, CMDId, GameId, Name, Updater, PID} -> 
+    {acc, CMDId, GameId, Name, Updater, PID} ->
       case maps:find(GameId, Games) of
         error -> PID ! {error, CMDId, "Juego no encontrado"},
                  master(Players, Games, Count);
         {ok, Game} ->
+          IsObs = member(Name, Game#game.obs),
           if 
+            IsObs ->
+              PID ! {error, CMDId, "No podés jugar una partida que estás observando, primero deja de observar"},
+              master(Players, Games, Count);
             Game#game.p1 == Name ->
               PID ! {error, CMDId, "No podés jugar contra vos mismo"},
               master(Players, Games, Count);

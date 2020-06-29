@@ -8,8 +8,6 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 
-\setlength{\parindent}{0pt}
-
 \title{Trabajo Práctico: Sistemas Operativos}
 \author{Mellino, Natalia \and Farizano, Juan Ignacio}
 \date{}
@@ -76,8 +74,9 @@ Cuando se incializa el servidor se abre el socket y comienzan cuatro procesos:
           \texttt{pupdater} que se encargará de mandarle al cliente las actualizaciones acerca del
           estado de los juegos en los que participe. Luego, el \texttt{dispatcher} inicia
           un hilo \texttt{psocket} que es el que se encargará únicamente de atender los pedidos de dicho
-          cliente. \\
-          El hilo \texttt{psocket}, primero se encarga de que el cliente proporcione un 
+          cliente.
+
+          \hspace{0.5cm} El hilo \texttt{psocket}, primero se encarga de que el cliente proporcione un 
           nombre de usuario. Una vez que este ya tiene un nombre, puede comenzar a realizar
           pedidos. Cuando el cliente hace un pedido, se inicia el proceso \texttt{pcomando}
           que recibe el pedido que mandó el cliente y si no se produce ningún error, lo cumple
@@ -104,6 +103,19 @@ momento de detectar si hubo algún error en la conexión o al procesar una petic
 evitar que éste se caiga.
 
 \subsection*{Cliente}
+
+Cuando inicializamos el Cliente con la función \texttt{start}, ésta comprueba primero
+si no hubo ningún error al intentar conectarse. Si la conexión fue exitosa, se llama a la
+función \texttt{sender}, que se encarga de que el Cliente proporcione un nombre de usuario. Una vez
+que ya lo tiene, se inicia el proceso \texttt{receiver} y \texttt{sender} se vuelve a llamar
+recursivamente. Ya en esta parte, el \texttt{sender} se encarga de enviar al Server todas 
+las peticiones del Cliente. Por otro lado, el \texttt{receiver} es el que recibe las respuestas
+por parte del Server y se encarga de mostrárselas al Cliente por pantalla.
+
+Básicamente, la implementación del Cliente consta de un menú interactivo, donde a éste se le presentan
+una serie de opciones para elegir, y cuando elige alguna de ellas, estas son convertidas a 
+peticiones que luego serán mandadas por el \texttt{sender} al Server a través del Socket y el
+\texttt{receiver} se encargará de comunicarle la respuesta del Servidor al Cliente. 
 
 \subsection*{Tateti}
 

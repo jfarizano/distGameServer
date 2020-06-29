@@ -149,6 +149,7 @@ print_board({A11, A12, A13, A21, A22, A23, A31, A32, A33}) ->
 show_game(Game)->
   io:format("Juegan ~p contra ~p, es el turno de ~p y se realizaron ~p movimientos ~n", [Game#game.p1, Game#game.p2, Game#game.turn, Game#game.moves]),
   print_board(Game#game.board).
+
   
 receiver(Socket) ->
   case gen_tcp:recv(Socket, 0) of
@@ -175,8 +176,14 @@ receiver(Socket) ->
           receiver(Socket);
         {ok, obs, CMDId, {N, Node}, Game} ->
           io:format("Se realizó el comando ~p, estás observando la partida: ~p en el nodo ~p ~n", [CMDId, N, Node]),
-          show_game(Game), 
-          receiver(Socket);
+          case Game#game.p2 of
+            undefined ->
+              io:format("La partida todavía no comenzó ~p está buscando rival", [Game#game.p1]),
+              receiver(Socket);
+            _ ->
+              show_game(Game),
+              receiver(Socket) 
+          end;
         {upd, start, {N, Node}, Game} -> 
           io:format("Inicia la partida: ~p en el nodo ~p: ~n", [N, Node]),
           show_game(Game),
