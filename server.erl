@@ -17,7 +17,8 @@ start() ->
   PSPid = spawn(?MODULE, pstat, []),
   register(pstat, PSPid),
   LSocket = open_socket(?PORT),
-  spawn(?MODULE, dispatcher, [LSocket]).
+  spawn(?MODULE, dispatcher, [LSocket]),
+  ok.
 
 % Abre el socket en el primer puerto disponible que se encuentre a partir
 % del default definido en el header.
@@ -67,7 +68,7 @@ delete_player(Name, Updater, [Hd | Tl], Games) ->
 % Envía a intervalos regulares la información de carga del nodo actual 
 % al resto de los nodos.
 pstat()->
-  send_to_registered(pbalance, append([node()], nodes()), {status, node(), statistics(run_queue)}),
+  send_to_registered(pbalance,[node() | nodes()], {status, node(), statistics(run_queue)}),
   timer:sleep(5000),
   pstat().
 
@@ -159,7 +160,7 @@ pcomando({con, NewName}, Name, Updater) ->
   end;
 % Lista los juegos disponibles.
 pcomando({lsg, CMDId}, _, Updater) ->
-  Lsg = lsgRequest(append([node()], nodes()), CMDId),
+  Lsg = lsgRequest([node() | nodes()], CMDId),
   Updater ! {ok, lsg, CMDId, Lsg};
 % Inicia nuevo juego.
 pcomando({new, CMDId}, Name, Updater) -> 
@@ -173,6 +174,7 @@ pcomando({acc, CMDId, {Count, Node}}, Name, Updater) ->
   receive
     {error, CMDId, Reason} -> Updater ! {error, CMDId, Reason};
     {ok, CMDId, Game} -> Updater ! {ok, CMDId},
+                         timer:sleep(100),
                          broadcast(Game#game.updaters, {upd, start, {Count, Node}, Game})                                  
   end;
 % Abandonar una partida en especifico.
@@ -187,8 +189,10 @@ pcomando({pla, CMDId, {Count, Node}, Play}, Name, Updater) ->
   receive
     {error, CMDId, Reason} -> Updater ! {error, CMDId, Reason};
     {ok, CMDId, Game, Result} -> Updater ! {ok, CMDId},
+                                 timer:sleep(100),
                                  broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game, Result});
     {ok, CMDId, Game} -> Updater ! {ok, CMDId},
+                         timer:sleep(100),
                          broadcast(Game#game.updaters, {upd, pla, Name, {Count, Node}, Game})
   end;
 % Observar un juego
@@ -216,7 +220,11 @@ pcomando(disconnect, Name, Updater) ->
   send_to_registered(master, nodes(), {bye, Name, Updater, self()}),
   receive
     _ -> ok
-  end.
+  end;
+% Pattern comodín, en caso de que se use otro cliente y se ingrese un comando
+% inválido o con sintaxis inválida.
+pcomando(_, _, Updater) ->
+  Updater ! {error, -1, "Comando inválido"}.
 
 % Master loop que se encarga de mantener actualizada la info 
 % de las partidas y los jugadores.
@@ -228,7 +236,7 @@ master(Players, Games, Count) ->
         true -> PID ! {error, "Este nombre ya está en uso"},
                 master(Players, Games, Count);
         false -> PID ! ok,
-                 master(append([Name], Players), Games, Count)
+                 master([Name | Players], Games, Count)
       end;
 
     % Se pide una lista de todos los juegos disponibles.
@@ -270,7 +278,7 @@ master(Players, Games, Count) ->
             true -> 
               PList = [Game#game.p1, Name], % Elegimos de quien es el primer turno aleatoriamente
               Index = rand:uniform(length(PList)),
-              NGame = Game#game{p2 = Name, board = ?CLEANBOARD, turn = nth(Index, PList), updaters = append([Updater], Game#game.updaters)},
+              NGame = Game#game{p2 = Name, board = ?CLEANBOARD, turn = nth(Index, PList), updaters = [Updater | Game#game.updaters]},
               NGames = maps:update(GameId, NGame, Games),
               PID ! {ok, CMDId, NGame},
               master(Players, NGames, Count)
@@ -338,7 +346,7 @@ master(Players, Games, Count) ->
             false ->
               if 
                 (Game#game.p1 /= Name) and (Game#game.p2 /= Name) ->
-                  NGame = Game#game{obs = append([Name], Game#game.obs), updaters = append([Updater], Game#game.updaters)},
+                  NGame = Game#game{obs = [Name | Game#game.obs], updaters = [Updater | Game#game.updaters]},
                   NGames = maps:update(GameId, NGame, Games),
                   PID ! {ok, obs, CMDId, GameId, Game},          
                   master(Players, NGames, Count);
@@ -371,8 +379,5 @@ master(Players, Games, Count) ->
     {bye, Name, Updater, PID} ->
       NGames = delete_player(Name, Updater, maps:keys(Games), Games),
       master(delete(Name, Players), NGames, Count),
-      PID ! ok;
-    Invalid ->  % En caso de que pcomando envíe algo inválido, no debería pasar
-      io:format("Se recibió el comando inválido ~p, revisar entrada ~n", [Invalid]),
-      master(Players, Games, Count)
+      PID ! ok
   end.

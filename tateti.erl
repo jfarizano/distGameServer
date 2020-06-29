@@ -17,6 +17,8 @@ make_play(Game, {I, J}, Name) ->
           end;
           true -> {error, "Movimiento inválido"}
       end;
+    (Game#game.p1 /= Name) and (Game#game.p2 /= Name) ->
+      {error, "No estás participando de este juego"};
     true -> {error, "No es tu turno"}
   end.
 

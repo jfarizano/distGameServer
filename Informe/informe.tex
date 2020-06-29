@@ -17,26 +17,26 @@
 \maketitle
 
 \section*{Objetivo}
-El objetivo es hacer un servidor de partidas de ta-te-ti. Este le permite a los 
+El objetivo es implementar un servidor distribuido de partidas de ta-te-ti. Este le permite a los 
 usuarios conectarse, crear nuevas partidas y aceptarlas, así como unirse a una
 partida iniciada o por iniciar como observador. Las distintas opciones entre las que
 puede elegir el usuario, son las siguientes:
 
 \begin{enumerate}
     \item Iniciar la comunicación con el servidor: para esto el usuario provee un
-          nombre y si este se encuentra en uso el servidor lo acepta.
+          nombre y si este no se encuentra en uso el servidor lo acepta.
     \item Listar los juegos disponibles: se muestran tanto los juegos que están en
           desarrollo como los que están esperando un contrincante.
     \item Crear un nuevo juego: este será entre el jugador que lo cree y el primero
           que lo acepte.
     \item Realizar una jugada: el usuario puede realizar un movimiento en el 
-          tablero o abandonar la partida si lo desea. El servidor devolverá una
+          tablero o abandonar la partida si lo desea. El servidor devolverá un
           error si la jugada no es válida.
     \item Observar un juego: el usuario que pida observar un juego, comenzará a 
           recibir todos los cambios en el estado del juego.
     \item Dejar de observar un juego.
     \item Terminar la conexión: el usuario abandona todos los juegos en los que 
-          participe y luego la conexión se termina.
+          participe u observe y luego la conexión se termina.
 \end{enumerate}
 
 Al ejecutar el programa del cliente, este tendrá un menú interactivo con instrucciones
@@ -46,9 +46,9 @@ detalladas acerca de cómo realizar cada comando.
 
 Para ejecutar el Cliente, en la consola de Erlang debemos hacer primero \texttt{c(client).} y
 luego, \texttt{client:start(IP, Port).} donde IP y Port deben ser la direccion de IP y
-Puerto correspondiente. \\
+Puerto del servidor al que se desea conectar. \\
 
-Para ejecutar el Server, debemos cargar dos módulos: \texttt{c(tateti).} y \texttt{c(server).}, una
+Para ejecutar el Server, debemos cargar dos módulos con: \texttt{c(tateti).} y \texttt{c(server).}, una
 vez hecho esto, simplemente escribimos: \texttt{server:start().} y ya estará listo
 para aceptar conexiones e interactuar con los clientes. \\
 
@@ -71,7 +71,8 @@ Cuando se incializa el servidor se abre el socket y comienzan cuatro procesos:
 \begin{itemize}
     \item \texttt{dispatcher}: es el proceso encargado de aceptar las conexiones de los clientes
           entrantes. Al aceptar la conexión de un cliente, se inicia un proceso llamado
-          \texttt{pupdater} que se encargará de mandarle al cliente las actualizaciones acerca del
+          \texttt{pupdater} que se encargará de mandarle al cliente las respuestas a sus peticiones y
+          las actualizaciones acerca del
           estado de los juegos en los que participe. Luego, el \texttt{dispatcher} inicia
           un hilo \texttt{psocket} que es el que se encargará únicamente de atender los pedidos de dicho
           cliente.
@@ -85,7 +86,8 @@ Cuando se incializa el servidor se abre el socket y comienzan cuatro procesos:
           los juegos que están en curso. Cuando el proceso \texttt{pcomando} recibe la
           petición del cliente, este se la manda a \texttt{master}, que se encarga de 
           realizarla, actualizar su información (si es necesario) y luego responderle a \texttt{pcomando} con la información que éste
-          le debe enviar de vuelta al cliente.
+          le debe enviar de vuelta al cliente y si es necesario, los cambios
+          que deben informarse a los demás jugadores y/u observadores.
     \item \texttt{pbalance} y \texttt{pstat}: como podemos tener distintos servidores corriendo
           en distintos nodos, aparentando ser un único servidor, es necesario tener funciones
           que se encarguen de repartir el trabajo que debe realizar cada nodo, para asi evitar 
@@ -106,16 +108,18 @@ evitar que éste se caiga.
 
 Cuando inicializamos el Cliente con la función \texttt{start}, ésta comprueba primero
 si no hubo ningún error al intentar conectarse. Si la conexión fue exitosa, se llama a la
-función \texttt{sender}, que se encarga de que el Cliente proporcione un nombre de usuario. Una vez
+función \texttt{sender}, que se encarga de que el usuario proporcione un nombre. Una vez
 que ya lo tiene, se inicia el proceso \texttt{receiver} y \texttt{sender} se vuelve a llamar
 recursivamente. Ya en esta parte, el \texttt{sender} se encarga de enviar al Server todas 
-las peticiones del Cliente. Por otro lado, el \texttt{receiver} es el que recibe las respuestas
-por parte del Server y se encarga de mostrárselas al Cliente por pantalla.
+las peticiones del usuario. Por otro lado, el \texttt{receiver} es el que recibe las respuestas
+por parte del Server y se encarga de mostrárselas al usuario por pantalla.
 
-Básicamente, la implementación del Cliente consta de un menú interactivo, donde a éste se le presentan
+Básicamente, la implementación del Cliente consta de un menú interactivo, donde al usuario se le presentan
 una serie de opciones para elegir, y cuando elige alguna de ellas, estas son convertidas a 
 peticiones que luego serán mandadas por el \texttt{sender} al Server a través del Socket y el
-\texttt{receiver} se encargará de comunicarle la respuesta del Servidor al Cliente. 
+\texttt{receiver} se encargará de comunicarle la respuesta del Servidor al usuario. 
+
+\newpage
 
 \subsection*{Tateti}
 
